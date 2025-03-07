@@ -21,11 +21,11 @@ const WHOAMI: u8 = 0x0C;
 const CTRL_REG1: u8 = 0x13;
 const EXPECTED_NAME: u8 = 0xD7;
 
-static I2C2_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'static, Async>>> = StaticCell::new();
+static I2C1_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'static, Async>>> = StaticCell::new();
 bind_interrupts!(
     struct Irqs {
-    I2C2_EV => i2c::EventInterruptHandler<peripherals::I2C2>;
-    I2C2_ER => i2c::ErrorInterruptHandler<peripherals::I2C2>;
+    I2C1_EV => i2c::EventInterruptHandler<peripherals::I2C1>;
+    I2C1_ER => i2c::ErrorInterruptHandler<peripherals::I2C1>;
 });
 
 static ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
@@ -87,18 +87,18 @@ async fn main(spawner: Spawner) {
     let mut odr_data = [0u8; 3];
 
     let i2c = I2c::new(
-        p.I2C2,
-        p.PF1,
-        p.PF0,
+        p.I2C1,
+        p.PB8,
+        p.PB9,
         Irqs,
-        p.DMA1_CH7,
-        p.DMA1_CH2,
+        p.GPDMA1_CH0,
+        p.GPDMA1_CH1,
         Hertz(100_000),
         Default::default(),
     );
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
     let i2c_bus = Mutex::new(i2c);
-    let i2c_bus = I2C2_BUS.init(i2c_bus);
+    let i2c_bus = I2C1_BUS.init(i2c_bus);
     let i2c2_device1 = I2cDevice::new(i2c_bus);
     let i2c2_device2 = I2cDevice::new(i2c_bus);
     let i2c2_device3 = I2cDevice::new(i2c_bus);
