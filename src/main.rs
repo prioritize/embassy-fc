@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 use core::cell::RefCell;
-use defmt::{println, unwrap};
+use defmt::{assert_eq, println, unwrap};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_stm32::i2c::{self, Error, I2c};
@@ -96,16 +96,20 @@ async fn main(spawner: Spawner) {
         Hertz(100_000),
         Default::default(),
     );
+    let mut fxas = fxas2100::FXAS2100::new(i2c, FXAS2100_ADDRESS);
+    let who_am_i = fxas.read_register(fxas2100::registers::WHO_AM_I).await;
+    assert_eq!(0xD7, who_am_i);
+    println!("Made it past the assert");
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
-    let i2c_bus = Mutex::new(i2c);
-    let i2c_bus = I2C2_BUS.init(i2c_bus);
-    let i2c2_device1 = I2cDevice::new(i2c_bus);
-    let i2c2_device2 = I2cDevice::new(i2c_bus);
-    let i2c2_device3 = I2cDevice::new(i2c_bus);
-    let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
-    let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
-    let _ = spawner.spawn(read_gyro_data(i2c2_device3));
-    println!("tick");
+    // let i2c_bus = Mutex::new(i2c);
+    // let i2c_bus = I2C2_BUS.init(i2c_bus);
+    // let i2c2_device1 = I2cDevice::new(i2c_bus);
+    // let i2c2_device2 = I2cDevice::new(i2c_bus);
+    // let i2c2_device3 = I2cDevice::new(i2c_bus);
+    // let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
+    // let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
+    // let _ = spawner.spawn(read_gyro_data(i2c2_device3));
+    // println!("tick");
     loop {
         Timer::after_millis(100).await;
         println!("Gyro Data: {}", *GYRO_DATA.lock().await);
