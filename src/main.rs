@@ -98,6 +98,7 @@ async fn main(spawner: Spawner) {
     );
     let mut fxas = fxas2100::FXAS2100::new(i2c, FXAS2100_ADDRESS);
     let who_am_i = fxas.read_register(fxas2100::registers::WHO_AM_I).await;
+    let current_state = fxas.set_active().await;
     assert_eq!(0xD7, who_am_i);
     println!("Made it past the assert");
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
