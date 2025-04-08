@@ -12,6 +12,7 @@ use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_sync::blocking_mutex::raw::{
     CriticalSectionRawMutex, NoopRawMutex, ThreadModeRawMutex,
 };
+use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
@@ -37,6 +38,8 @@ static ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
 static GYRO_DATA: Mutex<ThreadModeRawMutex, [u8; 6]> = Mutex::new([0u8; 6]);
 // static GYRO_COLLECT_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 static GYRO_COLLECT_SC: StaticCell<Signal<CriticalSectionRawMutex, bool>> = StaticCell::new();
+static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 10>> =
+    StaticCell::new();
 
 #[embassy_executor::task]
 async fn read_i2c_whoami(
@@ -78,16 +81,27 @@ async fn read_ctrl_reg1(mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c
 async fn gyro_worker(
     fxas: fxas2100::FXAS2100<I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>>,
     mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
+    gyro_channel: &'static mut Channel<CriticalSectionRawMutex, [u8; 6], 10>,
 ) {
     let mut data = [0u8; 6];
     let mut collect = false;
 
     loop {
+        // Need to handle a wait here, I'm sure there's more elegant ways of handling this that
+        // need to be done
+        Timer::after_millis(100).await;
         if collect {
-            let g_data = GYRO_DATA.lock().await;
-            match i2c.write_read(FXAS2100_ADDRESS, &*g_data, &mut data).await {
+            match i2c
+                .write_read(
+                    FXAS2100_ADDRESS,
+                    &[fxas2100::registers::OUT_X_MSB],
+                    &mut data,
+                )
+                .await
+            {
                 Ok(_) => {
-                    println!("data collected")
+                    let _ = gyro_channel.try_send(data);
+                    println!("{:?}", data);
                 }
                 Err(_) => {
                     println!("Encountered an error");
@@ -102,7 +116,7 @@ async fn gyro_worker(
                         fxas.collect_signal.wait().await;
                     }
                 }
-                None => nop(),
+                None => {}
             }
         }
     }
@@ -126,6 +140,8 @@ async fn main(spawner: Spawner) {
     );
     let gyro_signal: &'static mut Signal<CriticalSectionRawMutex, bool> =
         GYRO_COLLECT_SC.init(Signal::new());
+    let gyro_channel: &'static mut Channel<CriticalSectionRawMutex, [u8; 6], 10> =
+        GYRO_DATA_CHANNEL.init(Channel::new());
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
     let i2c_bus = Mutex::new(i2c);
     let i2c_bus = I2C2_BUS.init(i2c_bus);
@@ -141,12 +157,15 @@ async fn main(spawner: Spawner) {
     println!("Made it past the assert");
     let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
     let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
-    let _ = spawner.spawn(gyro_worker(fxas, i2c2_device3));
-    println!("tick");
+    let _ = spawner.spawn(gyro_worker(fxas, i2c2_device3, gyro_channel));
 
+    let mut value = 0;
     loop {
-        Timer::after_millis(100).await;
+        Timer::after_millis(1000).await;
         println!("tick");
-        println!("Gyro Data: {}", *GYRO_DATA.lock().await);
+        if value == 0 {
+            gyro_signal.signal(true);
+            value = 1;
+        }
     }
 }
