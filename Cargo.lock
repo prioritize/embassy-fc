@@ -247,6 +247,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "embassy-fc"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt",
+ "defmt-rtt",
+ "embassy-embedded-hal",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "fxas2100",
+ "heapless",
+ "nb 1.1.0",
+ "panic-probe",
+ "static_cell",
+]
+
+[[package]]
 name = "embassy-futures"
 version = "0.1.1"
 source = "git+https://github.com/embassy-rs/embassy#38f26137fc67beb874aa73c9a7ab2150d9f3d372"
@@ -315,29 +338,6 @@ dependencies = [
  "stm32-metapac",
  "vcell",
  "volatile-register",
-]
-
-[[package]]
-name = "embassy-stm32f2-examples"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "cortex-m-rt",
- "defmt",
- "defmt-rtt",
- "embassy-embedded-hal",
- "embassy-executor",
- "embassy-futures",
- "embassy-stm32",
- "embassy-sync",
- "embassy-time",
- "embedded-hal 1.0.0",
- "embedded-hal-async",
- "fxas2100",
- "heapless",
- "nb 1.1.0",
- "panic-probe",
- "static_cell",
 ]
 
 [[package]]
