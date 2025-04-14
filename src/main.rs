@@ -81,7 +81,7 @@ async fn read_ctrl_reg1(mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c
 async fn gyro_worker(
     fxas: fxas2100::FXAS2100<I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>>,
     mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
-    gyro_channel: &'static mut Channel<CriticalSectionRawMutex, [u8; 6], 10>,
+    gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
 ) {
     let mut data = [0u8; 6];
     let mut collect = false;
@@ -101,7 +101,7 @@ async fn gyro_worker(
             {
                 Ok(_) => {
                     let _ = gyro_channel.try_send(data);
-                    println!("{:?}", data);
+                    // println!("{:?}", data);
                 }
                 Err(_) => {
                     println!("Encountered an error");
@@ -127,6 +127,9 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
     let mut data = [0u8; 1];
     let mut odr_data = [0u8; 3];
+    let mut x_gyro_data = 0u16;
+    let mut y_gyro_data = 0u16;
+    let mut z_gyro_data = 0u16;
 
     let i2c = I2c::new(
         p.I2C1,
@@ -161,11 +164,22 @@ async fn main(spawner: Spawner) {
 
     let mut value = 0;
     loop {
-        Timer::after_millis(1000).await;
-        println!("tick");
+        Timer::after_millis(50).await;
         if value == 0 {
             gyro_signal.signal(true);
             value = 1;
+        }
+        while gyro_channel.len() != 0 {
+            println!("{}", gyro_channel.len());
+           match &gyro_channel.try_receive() {
+               Ok(data) => {
+                   x_gyro_data = ((data[0] as u16) << 8 ) | (data[1] as u16);
+                   y_gyro_data = ((data[2] as u16) << 8 ) | (data[3] as u16);
+                   z_gyro_data = ((data[4] as u16) << 8 ) | (data[5] as u16);
+                   println!("{}, {}, {}", x_gyro_data, y_gyro_data, z_gyro_data);
+               },
+               Err(_) => {}
+           }
         }
     }
 }
