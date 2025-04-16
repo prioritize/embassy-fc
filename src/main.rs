@@ -43,55 +43,14 @@ static FXAS_CELL: StaticCell<
 > = StaticCell::new();
 
 #[embassy_executor::task]
-async fn read_i2c_whoami(
-    mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
-) {
-    let mut data = [0u8; 1];
-    loop {
-        Timer::after_secs(1).await;
-        match i2c.write_read(FXAS2100_ADDRESS, &[WHOAMI], &mut data).await {
-            Ok(_) => {
-                println!("{}", data[0]);
-            }
-            Err(_) => {
-                println!("Encountered an error");
-            }
-        }
-        assert_eq!(0xD7, data[0]);
-    }
-}
+#[embassy_executor::task]
+async fn gyro_producer(channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>) {}
 
 #[embassy_executor::task]
-async fn read_ctrl_reg1(mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>) {
-    let mut data = [0u8; 6];
-    match i2c
-        .write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut data)
-        .await
-    {
-        Ok(_) => {
-            println!("CTRL_REG1: {}", data[0]);
-            println!("CTRL_REG1: {}", data[0] & 0b00001110);
-        }
-        Err(_) => {
-            println!("Encountered an error");
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn gyro_handler(
+async fn gyro_consumer(
     fxas: &'static fxas2100::FXAS2100<
         I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
     >,
-) {
-    fxas.state_handler();
-}
-#[embassy_executor::task]
-async fn gyro_worker(
-    fxas: &'static fxas2100::FXAS2100<
-        I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
-    >,
-    mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
     gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
 ) {
     let mut data = [0u8; 6];
@@ -152,6 +111,7 @@ async fn main(spawner: Spawner) {
         Hertz(100_000),
         Default::default(),
     );
+
     let gyro_signal: &'static mut Signal<CriticalSectionRawMutex, bool> =
         GYRO_COLLECT_SC.init(Signal::new());
     let gyro_channel: &'static mut Channel<CriticalSectionRawMutex, [u8; 6], 10> =
@@ -164,14 +124,11 @@ async fn main(spawner: Spawner) {
     let i2c2_device3 = I2cDevice::new(i2c_bus);
     let i2c2_device4 = I2cDevice::new(i2c_bus);
 
-    let fxas_interior = fxas2100::FXAS2100::new(i2c2_device4, FXAS2100_ADDRESS, gyro_signal);
-    let mut fxas = FXAS_CELL.init(fxas_interior);
+    let mut fxas = fxas2100::FXAS2100::new(i2c2_device4, FXAS2100_ADDRESS, gyro_signal);
     let who_am_i = fxas.read_register(fxas2100::registers::WHO_AM_I).await;
     //let current_state = fxas.set_active().await;
     assert_eq!(0xD7, who_am_i);
     println!("Made it past the assert");
-    let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
-    let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
     let _ = spawner.spawn(gyro_worker(fxas, i2c2_device3, gyro_channel));
 
     let mut value = 0;
