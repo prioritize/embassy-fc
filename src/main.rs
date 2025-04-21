@@ -14,13 +14,14 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::i2c::I2c as async_i2c;
 use fxas2100::commands::GyroCommands;
+use fxas2100::outputs::GyroOutput;
 use fxas2100::FXAS2100;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 type AsyncFXAS =
     fxas2100::FXAS2100<I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>>;
 type GyroCommandChannel = Channel<CriticalSectionRawMutex, GyroCommands, 10>;
-type GyroOutputChannel = Channel<CriticalSectionRawMutex, u8, 10>;
+type GyroOutputChannel = Channel<CriticalSectionRawMutex, GyroOutput, 10>;
 
 const FXAS2100_ADDRESS: u8 = 0x21;
 const FXAS2100_DATA: u8 = 0x01;
@@ -49,8 +50,9 @@ static FXAS_CELL: StaticCell<AsyncFXAS> = StaticCell::new();
 async fn gyro_controller(
     fxas: &'static mut AsyncFXAS,
     command_channel: &'static GyroCommandChannel,
+    output_channel: &'static GyroOutputChannel,
 ) {
-    fxas.controller_task(command_channel).await
+    fxas.controller_task(command_channel, output_channel).await
 }
 #[embassy_executor::task]
 async fn gyro_producer(channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>) {}
@@ -103,10 +105,25 @@ async fn main(spawner: Spawner) {
     //let current_state = fxas.set_active().await;
     assert_eq!(0xD7, who_am_i);
     println!("Made it past the assert");
-    let _ = spawner.spawn(gyro_controller(fxas, gyro_command_channel));
+    let _ = spawner.spawn(gyro_controller(
+        fxas,
+        gyro_command_channel,
+        gyro_output_channel,
+    ));
 
     loop {
-        Timer::after_secs(1);
+        Timer::after_secs(1).await;
         gyro_command_channel.send(GyroCommands::CheckWhoAmI).await;
+        match gyro_output_channel.try_receive() {
+            Ok(v) => match v {
+                GyroOutput::WhoAmI(data) => println!("WhoAmI, {}", data),
+                GyroOutput::GyroData(_) => todo!(),
+                GyroOutput::Temperature(_) => todo!(),
+                GyroOutput::Register(fxasregisters, _) => todo!(),
+            },
+            Err(_) => {
+                println!("Error in recieving");
+            }
+        }
     }
 }
