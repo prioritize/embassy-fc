@@ -17,6 +17,9 @@ use fxas2100::FXAS2100;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
+type AsyncFXAS = FXAS2100<I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>>;
+type AsyncI2CDevice = I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>;
+
 const FXAS2100_ADDRESS: u8 = 0x21;
 const FXAS2100_DATA: u8 = 0x01;
 const WHOAMI: u8 = 0x0C;
@@ -38,9 +41,7 @@ static GYRO_DATA: Mutex<ThreadModeRawMutex, [u8; 6]> = Mutex::new([0u8; 6]);
 static GYRO_COLLECT_SC: StaticCell<Signal<CriticalSectionRawMutex, bool>> = StaticCell::new();
 static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 10>> =
     StaticCell::new();
-static FXAS_CELL: StaticCell<
-    FXAS2100<I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>>,
-> = StaticCell::new();
+static FXAS_CELL: StaticCell<Mutex<CriticalSectionRawMutex, AsyncFXAS>> = StaticCell::new();
 
 #[embassy_executor::task]
 async fn read_i2c_whoami(
@@ -79,59 +80,9 @@ async fn read_ctrl_reg1(mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c
 }
 
 #[embassy_executor::task]
-async fn gyro_handler(
-    fxas: &'static fxas2100::FXAS2100<
-        I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
-    >,
-) {
-    fxas.state_handler();
-}
+async fn gyro_handler(fxas: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>) {}
 #[embassy_executor::task]
-async fn gyro_worker(
-    fxas: &'static fxas2100::FXAS2100<
-        I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
-    >,
-    mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
-    gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
-) {
-    let mut data = [0u8; 6];
-    let mut collect = false;
-
-    loop {
-        // Need to handle a wait here, I'm sure there's more elegant ways of handling this that
-        // need to be done
-        Timer::after_millis(100).await;
-        if collect {
-            match i2c
-                .write_read(
-                    FXAS2100_ADDRESS,
-                    &[fxas2100::registers::OUT_X_MSB],
-                    &mut data,
-                )
-                .await
-            {
-                Ok(_) => {
-                    let _ = gyro_channel.try_send(data);
-                    // println!("{:?}", data);
-                }
-                Err(_) => {
-                    println!("Encountered an error");
-                }
-            }
-        }
-        if fxas.collect_signal.signaled() {
-            match fxas.collect_signal.try_take() {
-                Some(v) => {
-                    collect = v;
-                    if !collect {
-                        fxas.collect_signal.wait().await;
-                    }
-                }
-                None => {}
-            }
-        }
-    }
-}
+async fn gyro_worker(fxas: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>) {}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -165,33 +116,23 @@ async fn main(spawner: Spawner) {
     let i2c2_device4 = I2cDevice::new(i2c_bus);
 
     let fxas_interior = fxas2100::FXAS2100::new(i2c2_device4, FXAS2100_ADDRESS, gyro_signal);
-    let mut fxas = FXAS_CELL.init(fxas_interior);
-    let who_am_i = fxas.read_register(fxas2100::registers::WHO_AM_I).await;
+    let mut fxas = FXAS_CELL.init(Mutex::new(fxas_interior));
+    let who_am_i = fxas
+        .get_mut()
+        .read_register(fxas2100::registers::WHO_AM_I)
+        .await;
     //let current_state = fxas.set_active().await;
     assert_eq!(0xD7, who_am_i);
     println!("Made it past the assert");
     let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
     let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
-    let _ = spawner.spawn(gyro_worker(fxas, i2c2_device3, gyro_channel));
+    let _ = spawner.spawn(gyro_worker(fxas));
 
     let mut value = 0;
     loop {
         Timer::after_millis(50).await;
         if value == 0 {
-            fxas.signal_inactive();
             value = 1;
-        }
-        while gyro_channel.len() != 0 {
-            println!("{}", gyro_channel.len());
-            match &gyro_channel.try_receive() {
-                Ok(data) => {
-                    x_gyro_data = ((data[0] as u16) << 8) | (data[1] as u16);
-                    y_gyro_data = ((data[2] as u16) << 8) | (data[3] as u16);
-                    z_gyro_data = ((data[4] as u16) << 8) | (data[5] as u16);
-                    println!("{}, {}, {}", x_gyro_data, y_gyro_data, z_gyro_data);
-                }
-                Err(_) => {}
-            }
         }
     }
 }
