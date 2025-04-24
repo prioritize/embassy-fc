@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Register Display</title>
+  <style>
+    :root {
+      --bg-color: #111;
+      --text-color: #0f0;
+      --register-bg: #222;
+      --bit-bg: #000;
+      --border-color: #0f0;
+      --highlight: #0f0;
+    }
+
+    .theme-monokai {
+      --bg-color: #272822;
+      --text-color: #f8f8f2;
+      --register-bg: #3e3d32;
+      --bit-bg: #1e1f1c;
+      --border-color: #f92672;
+      --highlight: #f92672;
+    }
+
+    .theme-darkula {
+      --bg-color: #2b2b2b;
+      --text-color: #a9b7c6;
+      --register-bg: #3c3f41;
+      --bit-bg: #2b2b2b;
+      --border-color: #6897bb;
+      --highlight: #6897bb;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      font-family: 'Courier New', monospace;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    .container {
+      text-align: center;
+    }
+
+    .register {
+      background: var(--register-bg);
+      padding: 30px;
+      border: 3px solid var(--border-color);
+      border-radius: 8px;
+      margin-bottom: 15px;
+    }
+
+    .bit-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 4px;
+      margin-bottom: 8px;
+      white-space: nowrap;
+    }
+
+    .bit-row span {
+      flex: 1;
+      text-align: center;
+      min-width: 32px;
+      font-size: 1.2em;
+      border: 1px solid var(--border-color);
+      padding: 4px 0;
+      cursor: pointer;
+    }
+
+    .labels span {
+      font-size: 0.9em;
+      opacity: 0.7;
+      cursor: default;
+    }
+
+    .values span {
+      background: var(--bit-bg);
+      font-weight: bold;
+    }
+
+    .info-section {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .output, .settings, .actions {
+      font-size: 1.2em;
+      color: var(--text-color);
+    }
+
+    .settings select, .theme-select {
+      margin-top: 8px;
+      padding: 6px 12px;
+      font-size: 1em;
+      font-family: 'Courier New', monospace;
+      background-color: var(--highlight);
+      color: var(--bg-color);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    button {
+      margin-top: 8px;
+      padding: 8px 14px;
+      font-size: 1.1em;
+      font-family: 'Courier New', monospace;
+      background-color: var(--highlight);
+      color: var(--bg-color);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="register">
+      <div class="bit-row labels" id="labels"></div>
+      <div class="bit-row values" id="values"></div>
+    </div>
+    <div class="info-section">
+      <div class="output" id="output"></div>
+      <div class="settings">
+        <label for="bitLength">Register Length:</label><br>
+        <select id="bitLength" onchange="changeBitLength()">
+          <option value="8">8</option>
+          <option value="16">16</option>
+          <option value="32" selected>32</option>
+          <option value="64">64</option>
+        </select><br><br>
+        <label for="themeSelect">Theme:</label><br>
+        <select id="themeSelect" class="theme-select" onchange="changeTheme()">
+          <option value="">Default</option>
+          <option value="theme-monokai">Monokai</option>
+          <option value="theme-darkula">Darkula</option>
+        </select>
+      </div>
+      <div class="actions">
+        <button onclick="resetRegister()">Reset Register</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let bitCount = 32;
+    let value = 0;
+    const labels = document.getElementById('labels');
+    const values = document.getElementById('values');
+    const output = document.getElementById('output');
+    const bitLengthSelector = document.getElementById('bitLength');
+    const themeSelector = document.getElementById('themeSelect');
+
+    function renderBits() {
+      labels.innerHTML = '';
+      values.innerHTML = '';
+      for (let i = bitCount - 1; i >= 0; i--) {
+        const label = document.createElement('span');
+        label.textContent = i;
+        labels.appendChild(label);
+
+        const bit = (value >> i) & 1;
+        const val = document.createElement('span');
+        val.textContent = bit;
+        val.dataset.bit = i;
+        val.addEventListener('click', () => toggleBit(i));
+        values.appendChild(val);
+      }
+      updateOutput();
+    }
+
+    function toggleBit(position) {
+      value ^= (1 << position);
+      renderBits();
+    }
+
+    function resetRegister() {
+      value = 0;
+      renderBits();
+    }
+
+    function updateOutput() {
+      output.innerHTML =
+        `<strong>Binary:</strong> 0b${value.toString(2).padStart(bitCount, '0')}<br>` +
+        `<strong>Hex:</strong> 0x${value.toString(16).padStart(Math.ceil(bitCount / 4), '0')}<br>` +
+        `<strong>Decimal:</strong> ${value}`;
+    }
+
+    function changeBitLength() {
+      bitCount = parseInt(bitLengthSelector.value);
+      value = 0;
+      renderBits();
+    }
+
+    function changeTheme() {
+      document.body.className = themeSelector.value;
+    }
+
+    renderBits();
+  </script>
+</body>
+</html>
