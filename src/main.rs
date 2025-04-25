@@ -54,6 +54,9 @@ const fn toggle_off(mask: u8, value: u8) -> u8 {
 const fn toggle_on(mask: u8, value: u8) -> u8 {
     mask | value
 }
+fn combine(msb: u8, lsb: u8) -> u16 {
+    (msb as u16) << 8 | lsb as u16
+}
 #[embassy_executor::task]
 async fn read_i2c_whoami(
     mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
@@ -128,7 +131,7 @@ async fn gyro_state_handler(
     }
 }
 #[embassy_executor::task]
-async fn gyro_worker(
+async fn gyro_producer(
     gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>,
     output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
 ) {
@@ -138,8 +141,20 @@ async fn gyro_worker(
         if gyro.state == State::Active {
             let data = gyro.collect_gyro_data().await;
             let _ = output_channel.try_send(data);
-            println!("{}", data);
         }
+    }
+}
+#[embassy_executor::task]
+async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>) {
+    loop {
+        let data = input_channel.receive().await;
+        let x = combine(data[1], data[0]);
+        let y = combine(data[3], data[2]);
+        let z = combine(data[5], data[4]);
+        println!(
+            "Data received in gyro_consumer: x: {}, y: {}, z: {}",
+            x, y, z
+        );
     }
 }
 
@@ -185,7 +200,8 @@ async fn main(spawner: Spawner) {
     println!("Made it past the assert");
     let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
     let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
-    let _ = spawner.spawn(gyro_worker(fxas, gyro_channel));
+    let _ = spawner.spawn(gyro_producer(fxas, gyro_channel));
+    let _ = spawner.spawn(gyro_consumer(gyro_channel));
 
     let mut value = true;
     Timer::after_secs(1).await;
