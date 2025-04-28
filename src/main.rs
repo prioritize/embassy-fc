@@ -44,16 +44,16 @@ static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 1
     StaticCell::new();
 static FXAS_CELL: StaticCell<Mutex<CriticalSectionRawMutex, AsyncFXAS>> = StaticCell::new();
 
-// This function accepts the bitmask in binary "e.g. - 0b00001111" and the existing value, and will
-// toggle the bits in the mask off in the value and return that value
-const fn toggle_off(mask: u8, value: u8) -> u8 {
-    !mask & value
-}
-// This function accepts the bitmask in binary "e.g. - 0b00001111" and the existing value, and will
-// toggle the bits in the mask on in the value and return that value
-const fn toggle_on(mask: u8, value: u8) -> u8 {
-    mask | value
-}
+// // This function accepts the bitmask in binary "e.g. - 0b00001111" and the existing value, and will
+// // toggle the bits in the mask off in the value and return that value
+// const fn toggle_off(mask: u8, value: u8) -> u8 {
+//     !mask & value
+// }
+// // This function accepts the bitmask in binary "e.g. - 0b00001111" and the existing value, and will
+// // toggle the bits in the mask on in the value and return that value
+// const fn toggle_on(mask: u8, value: u8) -> u8 {
+//     mask | value
+// }
 fn combine(msb: u8, lsb: u8) -> u16 {
     (msb as u16) << 8 | lsb as u16
 }
@@ -103,7 +103,7 @@ async fn gyro_state_handler(
         let current_state = gyro
             .lock()
             .await
-            .read_register(FXASRegisters::CTRL_REG1.to_u8())
+            .read_register(FXASRegisters::CtrlReg1.to_u8())
             .await;
         let current_state = current_state | 0b00000011;
         let state = match current_state {
@@ -193,7 +193,7 @@ async fn main(spawner: Spawner) {
     let mut fxas = FXAS_CELL.init(Mutex::new(fxas_interior));
     let who_am_i = fxas
         .get_mut()
-        .read_register(FXASRegisters::WHO_AM_I.to_u8())
+        .read_register(FXASRegisters::WhoAmI.to_u8())
         .await;
     //let current_state = fxas.set_active().await;
     assert_eq!(0xD7, who_am_i);
