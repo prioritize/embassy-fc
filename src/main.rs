@@ -11,21 +11,16 @@ use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMu
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c as async_i2c;
 use fxas2100::registers::Registers as FXASRegisters;
+use fxas2100::DEFAULT_ADDRESS as gyro_address;
 use fxas2100::{State, FXAS2100};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 type AsyncFXAS = FXAS2100<I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>>;
 type AsyncI2CDevice = I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>;
-
-const FXAS2100_ADDRESS: u8 = 0x21;
-const FXAS2100_DATA: u8 = 0x01;
-const WHOAMI: u8 = 0x0C;
-const CTRL_REG1: u8 = 0x13;
-const EXPECTED_NAME: u8 = 0xD7;
 
 static I2C2_BUS: StaticCell<Mutex<CriticalSectionRawMutex, I2c<'static, Async>>> =
     StaticCell::new();
@@ -36,8 +31,8 @@ bind_interrupts!(
     I2C2_ER => i2c::ErrorInterruptHandler<peripherals::I2C2>;
 });
 
-static ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
-static GYRO_DATA: Mutex<ThreadModeRawMutex, [u8; 6]> = Mutex::new([0u8; 6]);
+static _ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
+static _GYRO_DATA: Mutex<ThreadModeRawMutex, [u8; 6]> = Mutex::new([0u8; 6]);
 // static GYRO_COLLECT_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 static GYRO_COLLECT_SC: StaticCell<Signal<CriticalSectionRawMutex, bool>> = StaticCell::new();
 static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 10>> =
@@ -58,13 +53,14 @@ fn combine(msb: u8, lsb: u8) -> u16 {
     (msb as u16) << 8 | lsb as u16
 }
 #[embassy_executor::task]
-async fn read_i2c_whoami(
-    mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>,
-) {
+async fn read_i2c_whoami(mut i2c: AsyncI2CDevice) {
     let mut data = [0u8; 1];
     loop {
         Timer::after_secs(1).await;
-        match i2c.write_read(FXAS2100_ADDRESS, &[WHOAMI], &mut data).await {
+        match i2c
+            .write_read(gyro_address, &[FXASRegisters::WhoAmI.to_u8()], &mut data)
+            .await
+        {
             Ok(_) => {
                 println!("{}", data[0]);
             }
@@ -80,7 +76,7 @@ async fn read_i2c_whoami(
 async fn read_ctrl_reg1(mut i2c: I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, Async>>) {
     let mut data = [0u8; 6];
     match i2c
-        .write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut data)
+        .write_read(gyro_address, &[FXASRegisters::CtrlReg1.to_u8()], &mut data)
         .await
     {
         Ok(_) => {
@@ -106,7 +102,7 @@ async fn gyro_state_handler(
             .read_register(FXASRegisters::CtrlReg1.to_u8())
             .await;
         let current_state = current_state | 0b00000011;
-        let state = match current_state {
+        let _state = match current_state {
             0 => State::Standby,
             1 => State::Ready,
             2 => State::Active,
@@ -161,11 +157,6 @@ async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
-    let mut data = [0u8; 1];
-    let mut odr_data = [0u8; 3];
-    let mut x_gyro_data = 0u16;
-    let mut y_gyro_data = 0u16;
-    let mut z_gyro_data = 0u16;
 
     let i2c = I2c::new(
         p.I2C2,
@@ -177,7 +168,7 @@ async fn main(spawner: Spawner) {
         Hertz(100_000),
         Default::default(),
     );
-    let gyro_signal: &'static mut Signal<CriticalSectionRawMutex, bool> =
+    let _gyro_signal: &'static mut Signal<CriticalSectionRawMutex, bool> =
         GYRO_COLLECT_SC.init(Signal::new());
     let gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10> =
         GYRO_DATA_CHANNEL.init(Channel::new());
@@ -186,11 +177,11 @@ async fn main(spawner: Spawner) {
     let i2c_bus = I2C2_BUS.init(i2c_bus);
     let i2c2_device1 = I2cDevice::new(i2c_bus);
     let i2c2_device2 = I2cDevice::new(i2c_bus);
-    let i2c2_device3 = I2cDevice::new(i2c_bus);
+    let _i2c2_device3 = I2cDevice::new(i2c_bus);
     let i2c2_device4 = I2cDevice::new(i2c_bus);
 
-    let fxas_interior = fxas2100::FXAS2100::new(i2c2_device4, FXAS2100_ADDRESS).await;
-    let mut fxas = FXAS_CELL.init(Mutex::new(fxas_interior));
+    let fxas_interior = fxas2100::FXAS2100::new(i2c2_device4, gyro_address).await;
+    let fxas = FXAS_CELL.init(Mutex::new(fxas_interior));
     let who_am_i = fxas
         .get_mut()
         .read_register(FXASRegisters::WhoAmI.to_u8())
