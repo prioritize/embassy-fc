@@ -38,6 +38,7 @@ static GYRO_COLLECT_SC: StaticCell<Signal<CriticalSectionRawMutex, bool>> = Stat
 static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 10>> =
     StaticCell::new();
 static FXAS_CELL: StaticCell<Mutex<CriticalSectionRawMutex, AsyncFXAS>> = StaticCell::new();
+static GYRO_BUFFER: StaticCell<Mutex<CriticalSectionRawMutex, [u8; 192]>> = StaticCell::new();
 
 // // This function accepts the bitmask in binary "e.g. - 0b00001111" and the existing value, and will
 // // toggle the bits in the mask off in the value and return that value
@@ -131,15 +132,32 @@ async fn gyro_producer(
     gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>,
     output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
 ) {
+    let timeout = 1_000_000 / gyro.lock().await.data_rate.to_u16() as u64;
     loop {
-        Timer::after_millis(1).await;
+        Timer::after_micros(timeout).await;
         let mut gyro = gyro.lock().await;
         if gyro.state == State::Active {
-            let data = gyro.collect_gyro_data().await;
+            let data = gyro.get_gyro_data().await;
             let _ = output_channel.try_send(data);
         }
     }
 }
+#[embassy_executor::task]
+async fn gyro_producer_fifo(
+    gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>,
+    output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
+    buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]>,
+) {
+    let timeout = (1_000_000 / gyro.lock().await.data_rate.to_u16() as u64) * 24;
+    loop {
+        Timer::after_micros(timeout).await;
+        let mut gyro = gyro.lock().await;
+        if gyro.state == State::Active {
+            let data = gyro.get_gyro_data_buffer(*buffer.lock().await).await;
+        }
+    }
+}
+
 #[embassy_executor::task]
 async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>) {
     loop {
@@ -172,6 +190,8 @@ async fn main(spawner: Spawner) {
         GYRO_COLLECT_SC.init(Signal::new());
     let gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10> =
         GYRO_DATA_CHANNEL.init(Channel::new());
+    let gyro_buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]> =
+        GYRO_BUFFER.init(Mutex::new([0u8; 192]));
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
     let i2c_bus = Mutex::new(i2c);
     let i2c_bus = I2C2_BUS.init(i2c_bus);
@@ -191,14 +211,19 @@ async fn main(spawner: Spawner) {
     println!("Made it past the assert");
     let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
     let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
-    let _ = spawner.spawn(gyro_producer(fxas, gyro_channel));
-    let _ = spawner.spawn(gyro_consumer(gyro_channel));
+
+    let _ = spawner.spawn(gyro_producer_fifo(fxas, gyro_channel, gyro_buffer));
+    // let _ = spawner.spawn(gyro_producer(fxas, gyro_channel));
+    // let _ = spawner.spawn(gyro_consumer(gyro_channel));
 
     let mut value = true;
     Timer::after_secs(1).await;
 
-    fxas.lock().await.enable_self_test().await;
-    fxas.lock().await.set_active().await;
+    let _ = fxas
+        .lock()
+        .await
+        .set_fifo_mode(fxas2100::fifo::Mode::Circular)
+        .await;
 
     loop {
         Timer::after_millis(500).await;
