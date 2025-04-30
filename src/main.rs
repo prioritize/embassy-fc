@@ -1,12 +1,13 @@
 #![no_std]
 #![no_main]
-use defmt::{assert_eq, println};
+use defmt::{assert_eq, info, println};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
+use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::i2c::{self, I2c};
 use embassy_stm32::mode::Async;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{bind_interrupts, peripherals};
+use embassy_stm32::{bind_interrupts, eth, peripherals};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
@@ -29,6 +30,7 @@ bind_interrupts!(
     struct Irqs {
     I2C2_EV => i2c::EventInterruptHandler<peripherals::I2C2>;
     I2C2_ER => i2c::ErrorInterruptHandler<peripherals::I2C2>;
+    ETH => eth::InterruptHandler;
 });
 
 static _ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
@@ -123,7 +125,10 @@ async fn gyro_state_handler(
                 }
                 State::Error => println!("Got an error state"),
             },
-            None => continue,
+            None => {
+                println!("Nothing in the try_take");
+                continue;
+            }
         }
     }
 }
@@ -136,7 +141,7 @@ async fn gyro_producer(
     loop {
         Timer::after_micros(timeout).await;
         let mut gyro = gyro.lock().await;
-        if gyro.state == State::Active {
+        if gyro.get_state() == &State::Active {
             let data = gyro.get_gyro_data().await;
             let _ = output_channel.try_send(data);
         }
@@ -148,11 +153,11 @@ async fn gyro_producer_fifo(
     output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
     buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]>,
 ) {
-    let timeout = (1_000_000 / gyro.lock().await.data_rate.to_u16() as u64) * 24;
+    let timeout = (1_000_000 / gyro.lock().await.data_rate.to_u16() as u64) * 20;
     loop {
         Timer::after_micros(timeout).await;
         let mut gyro = gyro.lock().await;
-        if gyro.state == State::Active {
+        if gyro.get_state() == &State::Active {
             let data = gyro.get_gyro_data_buffer(*buffer.lock().await).await;
         }
     }
@@ -171,6 +176,16 @@ async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, 
         );
     }
 }
+#[embassy_executor::task]
+async fn gyro_temp_producer(gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>) {
+    loop {
+        Timer::after_secs(1).await;
+        let temp = gyro.lock().await.get_temp().await;
+        if let Ok(t) = temp {
+            info!("Temperature: {}", t)
+        }
+    }
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -183,7 +198,7 @@ async fn main(spawner: Spawner) {
         Irqs,
         p.DMA1_CH7,
         p.DMA1_CH2,
-        Hertz(100_000),
+        Hertz(400_000),
         Default::default(),
     );
     let _gyro_signal: &'static mut Signal<CriticalSectionRawMutex, bool> =
@@ -192,6 +207,8 @@ async fn main(spawner: Spawner) {
         GYRO_DATA_CHANNEL.init(Channel::new());
     let gyro_buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]> =
         GYRO_BUFFER.init(Mutex::new([0u8; 192]));
+    static PACKETS: StaticCell<PacketQueue<4, 4>> = StaticCell::new();
+
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
     let i2c_bus = Mutex::new(i2c);
     let i2c_bus = I2C2_BUS.init(i2c_bus);
@@ -209,12 +226,13 @@ async fn main(spawner: Spawner) {
     //let current_state = fxas.set_active().await;
     assert_eq!(0xD7, who_am_i);
     println!("Made it past the assert");
-    let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
+    // let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
     let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
 
     let _ = spawner.spawn(gyro_producer_fifo(fxas, gyro_channel, gyro_buffer));
     // let _ = spawner.spawn(gyro_producer(fxas, gyro_channel));
     // let _ = spawner.spawn(gyro_consumer(gyro_channel));
+    let _ = spawner.spawn(gyro_temp_producer(fxas));
 
     let mut value = true;
     Timer::after_secs(1).await;
@@ -224,15 +242,17 @@ async fn main(spawner: Spawner) {
         .await
         .set_fifo_mode(fxas2100::fifo::Mode::Circular)
         .await;
+    let _ = fxas.lock().await.set_active().await;
 
     loop {
         Timer::after_millis(500).await;
-        if value {
-            fxas.lock().await.set_active().await;
-            value = !value;
-        } else {
-            fxas.lock().await.set_ready().await;
-            value = !value;
-        }
+        info!("tick");
+        // if value {
+        //     fxas.lock().await.set_active().await;
+        //     value = !value;
+        // } else {
+        //     fxas.lock().await.set_ready().await;
+        //     value = !value;
+        // }
     }
 }
