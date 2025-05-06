@@ -3,7 +3,7 @@
 use defmt::{assert_eq, info, println};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_stm32::eth::PacketQueue;
+use embassy_stm32::eth::{GenericPhy, PacketQueue};
 use embassy_stm32::i2c::{self, I2c};
 use embassy_stm32::mode::Async;
 use embassy_stm32::time::Hertz;
@@ -31,6 +31,7 @@ bind_interrupts!(
     I2C2_EV => i2c::EventInterruptHandler<peripherals::I2C2>;
     I2C2_ER => i2c::ErrorInterruptHandler<peripherals::I2C2>;
     ETH => eth::InterruptHandler;
+
 });
 
 static _ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
@@ -207,7 +208,24 @@ async fn main(spawner: Spawner) {
         GYRO_DATA_CHANNEL.init(Channel::new());
     let gyro_buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]> =
         GYRO_BUFFER.init(Mutex::new([0u8; 192]));
+    let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
     static PACKETS: StaticCell<PacketQueue<4, 4>> = StaticCell::new();
+    let mut eth = eth::Ethernet::new(
+        PACKETS.init(PacketQueue::<4, 4>::new()),
+        p.ETH,
+        Irqs,
+        p.PB6,
+        p.PA2,
+        p.PG6,
+        p.PA7,
+        p.PG4,
+        p.PG5,
+        p.PG11,
+        p.PG13,
+        p.PG12,
+        GenericPhy::new(0),
+        mac_addr,
+    );
 
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
     let i2c_bus = Mutex::new(i2c);
