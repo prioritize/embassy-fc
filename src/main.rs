@@ -1,11 +1,15 @@
 #![no_std]
 #![no_main]
-use defmt::{assert_eq, info, println};
+
+use defmt::{assert_eq, info, println, unwrap};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_stm32::eth::{GenericPhy, PacketQueue};
+use embassy_net::udp::{PacketMetadata, UdpSocket};
+use embassy_net::{Ipv4Address, Ipv4Cidr, StackResources};
+use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
 use embassy_stm32::i2c::{self, I2c};
 use embassy_stm32::mode::Async;
+use embassy_stm32::peripherals::ETH;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{bind_interrupts, eth, peripherals};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
@@ -17,6 +21,7 @@ use embedded_hal_async::i2c::I2c as async_i2c;
 use fxas2100::registers::Registers as FXASRegisters;
 use fxas2100::DEFAULT_ADDRESS as gyro_address;
 use fxas2100::{State, FXAS2100};
+use heapless::Vec;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -33,6 +38,7 @@ bind_interrupts!(
     ETH => eth::InterruptHandler;
 
 });
+type EthernetDevice = Ethernet<'static, ETH, GenericPhy>;
 
 static _ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
 static _GYRO_DATA: Mutex<ThreadModeRawMutex, [u8; 6]> = Mutex::new([0u8; 6]);
@@ -187,6 +193,10 @@ async fn gyro_temp_producer(gyro: &'static Mutex<CriticalSectionRawMutex, AsyncF
         }
     }
 }
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, EthernetDevice>) -> ! {
+    runner.run().await
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -210,22 +220,27 @@ async fn main(spawner: Spawner) {
         GYRO_BUFFER.init(Mutex::new([0u8; 192]));
     let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
     static PACKETS: StaticCell<PacketQueue<4, 4>> = StaticCell::new();
-    let mut eth = eth::Ethernet::new(
+    let device = eth::Ethernet::new(
         PACKETS.init(PacketQueue::<4, 4>::new()),
         p.ETH,
         Irqs,
-        p.PB6,
+        p.PA1,
         p.PA2,
-        p.PG6,
+        p.PC1,
         p.PA7,
-        p.PG4,
-        p.PG5,
-        p.PG11,
+        p.PC4,
+        p.PC5,
         p.PG13,
         p.PG12,
-        GenericPhy::new(0),
+        p.PG11,
+        GenericPhy::new_auto(),
         mac_addr,
     );
+    let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+        address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 1, 99), 24),
+        dns_servers: Vec::new(),
+        gateway: Some(Ipv4Address::new(192, 168, 0, 1)),
+    });
 
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
     let i2c_bus = Mutex::new(i2c);
@@ -241,6 +256,9 @@ async fn main(spawner: Spawner) {
         .get_mut()
         .read_register(FXASRegisters::WhoAmI.to_u8())
         .await;
+    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    let (stack, runner) =
+        embassy_net::new(device, config, RESOURCES.init(StackResources::new()), 10);
     //let current_state = fxas.set_active().await;
     assert_eq!(0xD7, who_am_i);
     println!("Made it past the assert");
@@ -262,9 +280,31 @@ async fn main(spawner: Spawner) {
         .await;
     let _ = fxas.lock().await.set_active().await;
 
+    unwrap!(spawner.spawn(net_task(runner)));
+    stack.wait_config_up().await;
+    // Then we can use it!
+    let mut rx_meta = [PacketMetadata::EMPTY; 16];
+    let mut rx_buffer = [0; 1024];
+    let mut tx_meta = [PacketMetadata::EMPTY; 16];
+    let mut tx_buffer = [0; 1024];
+
+    let remote_endpoint = (Ipv4Address::new(192, 168, 1, 29), 8000);
+    let mut socket = UdpSocket::new(
+        stack,
+        &mut rx_meta,
+        &mut rx_buffer,
+        &mut tx_meta,
+        &mut tx_buffer,
+    );
+    socket.bind(remote_endpoint).expect("Socket Bind Error");
     loop {
         Timer::after_millis(500).await;
         info!("tick");
+        socket
+            .send_to(b"Hello, world", remote_endpoint)
+            .await
+            .expect("Buffer sent");
+        Timer::after_secs(1).await;
         // if value {
         //     fxas.lock().await.set_active().await;
         //     value = !value;
