@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use defmt::{assert_eq, info, println, unwrap};
+use defmt::{assert_eq, info, println, trace, unwrap};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
@@ -231,7 +231,7 @@ async fn main(spawner: Spawner) {
         p.PC4,
         p.PC5,
         p.PG13,
-        p.PG12,
+        p.PB13,
         p.PG11,
         GenericPhy::new_auto(),
         mac_addr,
@@ -297,6 +297,7 @@ async fn main(spawner: Spawner) {
         &mut tx_buffer,
     );
     socket.bind(remote_endpoint).expect("Socket Bind Error");
+    trace!("Is the socket ready?: {}", socket.may_send());
     loop {
         Timer::after_millis(500).await;
         info!("tick");
