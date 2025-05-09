@@ -166,18 +166,27 @@ async fn gyro_producer_fifo(
         let mut gyro = gyro.lock().await;
         if gyro.get_state() == &State::Active {
             let size = gyro.get_gyro_data_buffer(*buffer.lock().await).await as usize;
+            let mut temp_buffer = [0u8; 192];
             {
                 let locked_buffer = buffer.lock().await;
-                for i in 0..size {
-                    output_channel.try_send(locked_buffer[i..(i + 6)]);
-                }
+                temp_buffer[0..size].copy_from_slice(&locked_buffer[0..size]);
+            }
+            for i in (0..size / 6).step_by(6) {
+                let _ = output_channel.try_send([
+                    temp_buffer[i],
+                    temp_buffer[i + 1],
+                    temp_buffer[i + 2],
+                    temp_buffer[i + 3],
+                    temp_buffer[i + 4],
+                    temp_buffer[i + 5],
+                ]);
             }
         }
     }
 }
 
 #[embassy_executor::task]
-async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>) {
+async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>) {
     loop {
         let data = input_channel.receive().await;
         let x = combine(data[1], data[0]);
@@ -273,7 +282,7 @@ async fn main(spawner: Spawner) {
 
     let _ = spawner.spawn(gyro_producer_fifo(fxas, gyro_channel, gyro_buffer));
     // let _ = spawner.spawn(gyro_producer(fxas, gyro_channel));
-    // let _ = spawner.spawn(gyro_consumer(gyro_channel));
+    let _ = spawner.spawn(gyro_consumer(gyro_channel));
     let _ = spawner.spawn(gyro_temp_producer(fxas));
 
     let mut value = true;
