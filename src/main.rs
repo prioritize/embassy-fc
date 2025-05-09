@@ -44,7 +44,7 @@ static _ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
 static _GYRO_DATA: Mutex<ThreadModeRawMutex, [u8; 6]> = Mutex::new([0u8; 6]);
 // static GYRO_COLLECT_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 static GYRO_COLLECT_SC: StaticCell<Signal<CriticalSectionRawMutex, bool>> = StaticCell::new();
-static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 10>> =
+static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 32>> =
     StaticCell::new();
 static FXAS_CELL: StaticCell<Mutex<CriticalSectionRawMutex, AsyncFXAS>> = StaticCell::new();
 static GYRO_BUFFER: StaticCell<Mutex<CriticalSectionRawMutex, [u8; 192]>> = StaticCell::new();
@@ -157,7 +157,7 @@ async fn gyro_producer(
 #[embassy_executor::task]
 async fn gyro_producer_fifo(
     gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>,
-    output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10>,
+    output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>,
     buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]>,
 ) {
     let timeout = (1_000_000 / gyro.lock().await.data_rate.to_u16() as u64) * 20;
@@ -165,7 +165,13 @@ async fn gyro_producer_fifo(
         Timer::after_micros(timeout).await;
         let mut gyro = gyro.lock().await;
         if gyro.get_state() == &State::Active {
-            let data = gyro.get_gyro_data_buffer(*buffer.lock().await).await;
+            let size = gyro.get_gyro_data_buffer(*buffer.lock().await).await as usize;
+            {
+                let locked_buffer = buffer.lock().await;
+                for i in 0..size {
+                    output_channel.try_send(locked_buffer[i..(i + 6)]);
+                }
+            }
         }
     }
 }
@@ -214,7 +220,7 @@ async fn main(spawner: Spawner) {
     );
     let _gyro_signal: &'static mut Signal<CriticalSectionRawMutex, bool> =
         GYRO_COLLECT_SC.init(Signal::new());
-    let gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 10> =
+    let gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32> =
         GYRO_DATA_CHANNEL.init(Channel::new());
     let gyro_buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]> =
         GYRO_BUFFER.init(Mutex::new([0u8; 192]));
