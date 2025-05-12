@@ -4,7 +4,7 @@
 use defmt::{assert_eq, info, println, trace, unwrap};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_net::udp::{PacketMetadata, UdpSocket};
+use embassy_net::udp::{PacketMetadata, UdpMetadata, UdpSocket};
 use embassy_net::{Ipv4Address, Ipv4Cidr, StackResources};
 use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
 use embassy_stm32::i2c::{self, I2c};
@@ -212,7 +212,22 @@ async fn gyro_temp_producer(gyro: &'static Mutex<CriticalSectionRawMutex, AsyncF
 async fn net_task(mut runner: embassy_net::Runner<'static, EthernetDevice>) -> ! {
     runner.run().await
 }
-
+#[embassy_executor::task]
+async fn gyro_socket_task(
+    socket: &'static mut UdpSocket<'static>,
+    in_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>,
+) {
+    let remote_endpoint = (Ipv4Address::new(192, 168, 1, 29), 8000);
+    let _ = socket.bind(remote_endpoint);
+    loop {
+        Timer::after_secs(1).await;
+        socket
+            .send_to(b"Hello, world", remote_endpoint)
+            .await
+            .expect("Buffer sent");
+    }
+    //
+}
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
@@ -298,28 +313,30 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(net_task(runner)));
     stack.wait_config_up().await;
     // Then we can use it!
-    let mut rx_meta = [PacketMetadata::EMPTY; 16];
-    let mut rx_buffer = [0; 1024];
-    let mut tx_meta = [PacketMetadata::EMPTY; 16];
-    let mut tx_buffer = [0; 1024];
+    static RX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
+    static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
+    static RX_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
+    static TX_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
+
+    let rx_meta = RX_META.init([PacketMetadata::EMPTY; 16]);
+    let tx_meta = TX_META.init([PacketMetadata::EMPTY; 16]);
+    let rx_buffer = RX_BUFFER.init([0u8; 1024]);
+    let tx_buffer = TX_BUFFER.init([0u8; 1024]);
 
     let remote_endpoint = (Ipv4Address::new(192, 168, 1, 29), 8000);
-    let mut socket = UdpSocket::new(
-        stack,
-        &mut rx_meta,
-        &mut rx_buffer,
-        &mut tx_meta,
-        &mut tx_buffer,
-    );
-    socket.bind(remote_endpoint).expect("Socket Bind Error");
-    trace!("Is the socket ready?: {}", socket.may_send());
+    let mut socket = UdpSocket::new(stack, rx_meta, rx_buffer, tx_meta, tx_buffer);
+    static UDP_SOCKET: StaticCell<UdpSocket> = StaticCell::new();
+    let udp_socket = UDP_SOCKET.init(socket);
+    // socket.bind(remote_endpoint).expect("Socket Bind Error");
+    // trace!("Is the socket ready?: {}", socket.may_send());
+    unwrap!(spawner.spawn(gyro_socket_task(udp_socket, gyro_channel)));
     loop {
         Timer::after_millis(500).await;
         info!("tick");
-        socket
-            .send_to(b"Hello, world", remote_endpoint)
-            .await
-            .expect("Buffer sent");
+        // socket
+        //     .send_to(b"Hello, world", remote_endpoint)
+        //     .await
+        //     .expect("Buffer sent");
         Timer::after_secs(1).await;
         // if value {
         //     fxas.lock().await.set_active().await;
