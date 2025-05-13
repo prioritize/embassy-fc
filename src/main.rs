@@ -165,10 +165,11 @@ async fn gyro_producer_fifo(
         Timer::after_micros(timeout).await;
         let mut gyro = gyro.lock().await;
         if gyro.get_state() == &State::Active {
-            let size = gyro.get_gyro_data_buffer(*buffer.lock().await).await as usize;
+            let size = gyro.get_gyro_data_buffer(&mut *buffer.lock().await).await as usize;
             let mut temp_buffer = [0u8; 192];
             {
                 let locked_buffer = buffer.lock().await;
+                trace!("buffer in producer_fifo: {}", *locked_buffer);
                 temp_buffer[0..size].copy_from_slice(&locked_buffer[0..size]);
             }
             for i in (0..size / 6).step_by(6) {
@@ -219,14 +220,27 @@ async fn gyro_socket_task(
 ) {
     let remote_endpoint = (Ipv4Address::new(192, 168, 1, 29), 8000);
     let _ = socket.bind(remote_endpoint);
+    let mut buffer = [0u8; 192];
+    let mut idx = 0usize;
     loop {
-        Timer::after_secs(1).await;
-        socket
-            .send_to(b"Hello, world", remote_endpoint)
-            .await
-            .expect("Buffer sent");
+        let sample = in_channel.receive().await;
+        trace!("sample: {}", sample);
+        let base = idx * 6;
+        buffer[base] = sample[0];
+        buffer[base + 1] = sample[1];
+        buffer[base + 2] = sample[2];
+        buffer[base + 3] = sample[3];
+        buffer[base + 4] = sample[4];
+        buffer[base + 5] = sample[5];
+        idx += 1;
+        if idx == 31 {
+            idx = 0;
+            socket
+                .send_to(&buffer, remote_endpoint)
+                .await
+                .expect("Buffer sent");
+        }
     }
-    //
 }
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
