@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use defmt::{assert_eq, info, println, trace, unwrap};
+use defmt::{assert_eq, info, println, trace, unwrap, warn};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpMetadata, UdpSocket};
@@ -166,10 +166,10 @@ async fn gyro_producer_fifo(
         let mut gyro = gyro.lock().await;
         if gyro.get_state() == &State::Active {
             let size = gyro.get_gyro_data_buffer(&mut *buffer.lock().await).await as usize;
+            println!("size: {}", size);
             let mut temp_buffer = [0u8; 192];
             {
                 let locked_buffer = buffer.lock().await;
-                trace!("buffer in producer_fifo: {}", *locked_buffer);
                 temp_buffer[0..size].copy_from_slice(&locked_buffer[0..size]);
             }
             for i in (0..size / 6).step_by(6) {
@@ -186,19 +186,15 @@ async fn gyro_producer_fifo(
     }
 }
 
-#[embassy_executor::task]
-async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>) {
-    loop {
-        let data = input_channel.receive().await;
-        let x = combine(data[1], data[0]);
-        let y = combine(data[3], data[2]);
-        let z = combine(data[5], data[4]);
-        println!(
-            "Data received in gyro_consumer: x: {}, y: {}, z: {}",
-            x, y, z
-        );
-    }
-}
+// #[embassy_executor::task]
+// async fn gyro_consumer(input_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>) {
+//     loop {
+//         let data = input_channel.receive().await;
+//         let x = combine(data[1], data[0]);
+//         let y = combine(data[3], data[2]);
+//         let z = combine(data[5], data[4]);
+//     }
+// }
 #[embassy_executor::task]
 async fn gyro_temp_producer(gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>) {
     loop {
@@ -219,12 +215,13 @@ async fn gyro_socket_task(
     in_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>,
 ) {
     let remote_endpoint = (Ipv4Address::new(192, 168, 1, 29), 8000);
-    let _ = socket.bind(remote_endpoint);
+    let _ = socket.bind((Ipv4Address::new(192, 168, 1, 99), 8000));
     let mut buffer = [0u8; 192];
     let mut idx = 0usize;
     loop {
+        println!("length of channel: {}", in_channel.len());
         let sample = in_channel.receive().await;
-        trace!("sample: {}", sample);
+        println!("received a sample from channel");
         let base = idx * 6;
         buffer[base] = sample[0];
         buffer[base + 1] = sample[1];
@@ -239,6 +236,7 @@ async fn gyro_socket_task(
                 .send_to(&buffer, remote_endpoint)
                 .await
                 .expect("Buffer sent");
+            trace!("sent one packet");
         }
     }
 }
@@ -289,7 +287,6 @@ async fn main(spawner: Spawner) {
     // let _ = i2c.write_read(FXAS2100_ADDRESS, &[CTRL_REG1], &mut odr_data);
     let i2c_bus = Mutex::new(i2c);
     let i2c_bus = I2C2_BUS.init(i2c_bus);
-    let i2c2_device1 = I2cDevice::new(i2c_bus);
     let i2c2_device2 = I2cDevice::new(i2c_bus);
     let _i2c2_device3 = I2cDevice::new(i2c_bus);
     let i2c2_device4 = I2cDevice::new(i2c_bus);
@@ -300,6 +297,9 @@ async fn main(spawner: Spawner) {
         .get_mut()
         .read_register(FXASRegisters::WhoAmI.to_u8())
         .await;
+    // fxas.get_mut()
+    //     .set_odr(fxas2100::odr::DataRate::EightHundred)
+    //     .await;
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
     let (stack, runner) =
         embassy_net::new(device, config, RESOURCES.init(StackResources::new()), 10);
@@ -311,7 +311,7 @@ async fn main(spawner: Spawner) {
 
     let _ = spawner.spawn(gyro_producer_fifo(fxas, gyro_channel, gyro_buffer));
     // let _ = spawner.spawn(gyro_producer(fxas, gyro_channel));
-    let _ = spawner.spawn(gyro_consumer(gyro_channel));
+    // let _ = spawner.spawn(gyro_consumer(gyro_channel));
     let _ = spawner.spawn(gyro_temp_producer(fxas));
 
     let mut value = true;
@@ -336,9 +336,10 @@ async fn main(spawner: Spawner) {
     let tx_meta = TX_META.init([PacketMetadata::EMPTY; 16]);
     let rx_buffer = RX_BUFFER.init([0u8; 1024]);
     let tx_buffer = TX_BUFFER.init([0u8; 1024]);
+    warn!("stack: {}", stack.hardware_address());
+    warn!("stack: {}", stack.config_v4().expect("failed").address);
 
-    let remote_endpoint = (Ipv4Address::new(192, 168, 1, 29), 8000);
-    let mut socket = UdpSocket::new(stack, rx_meta, rx_buffer, tx_meta, tx_buffer);
+    let socket = UdpSocket::new(stack, rx_meta, rx_buffer, tx_meta, tx_buffer);
     static UDP_SOCKET: StaticCell<UdpSocket> = StaticCell::new();
     let udp_socket = UDP_SOCKET.init(socket);
     // socket.bind(remote_endpoint).expect("Socket Bind Error");
