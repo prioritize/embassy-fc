@@ -1,12 +1,14 @@
 #![no_std]
 #![no_main]
 
-use defmt::{assert_eq, info, println, trace, unwrap, warn};
+use defmt::{assert_eq, error, info, println, trace, unwrap, warn};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpMetadata, UdpSocket};
 use embassy_net::{Ipv4Address, Ipv4Cidr, StackResources};
 use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
+use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::gpio::Pull;
 use embassy_stm32::i2c::{self, I2c};
 use embassy_stm32::mode::Async;
 use embassy_stm32::peripherals::ETH;
@@ -47,7 +49,7 @@ static GYRO_COLLECT_SC: StaticCell<Signal<CriticalSectionRawMutex, bool>> = Stat
 static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 32>> =
     StaticCell::new();
 static FXAS_CELL: StaticCell<Mutex<CriticalSectionRawMutex, AsyncFXAS>> = StaticCell::new();
-static GYRO_BUFFER: StaticCell<Mutex<CriticalSectionRawMutex, [u8; 192]>> = StaticCell::new();
+static GYRO_BUFFER: StaticCell<Mutex<CriticalSectionRawMutex, [u8; 144]>> = StaticCell::new();
 
 // // This function accepts the bitmask in binary "e.g. - 0b00001111" and the existing value, and will
 // // toggle the bits in the mask off in the value and return that value
@@ -156,33 +158,46 @@ async fn gyro_producer(
 }
 #[embassy_executor::task]
 async fn gyro_producer_fifo(
+    interrupt: &'static mut ExtiInput<'static>,
     gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>,
     output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>,
-    buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]>,
+    buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 144]>,
 ) {
-    let timeout = (1_000_000 / gyro.lock().await.data_rate.to_u16() as u64) * 20;
+    // timeout isn't needed as we're working with interrupts now
+    // let timeout = (1_000_000 / gyro.lock().await.data_rate.to_u16() as u64) * 20;
+    // The interrupt should be triggered when there are 20 samples in the buffer that are ready
+    // (20 samples * 6 bytes per sample = 120 bytes)
+    let mut temp_buffer = [0u8; 144];
     loop {
-        Timer::after_micros(timeout).await;
+        trace!("waiting for an interrupt in gyro_producer_fifo");
+        interrupt.wait_for_rising_edge().await;
+        trace!("interrupt triggered");
         let mut gyro = gyro.lock().await;
-        if gyro.get_state() == &State::Active {
-            let size = gyro.get_gyro_data_buffer(&mut *buffer.lock().await).await as usize;
-            println!("size: {}", size);
-            let mut temp_buffer = [0u8; 192];
-            {
-                let locked_buffer = buffer.lock().await;
-                temp_buffer[0..size].copy_from_slice(&locked_buffer[0..size]);
-            }
-            for i in (0..size / 6).step_by(6) {
-                let _ = output_channel.try_send([
-                    temp_buffer[i],
-                    temp_buffer[i + 1],
-                    temp_buffer[i + 2],
-                    temp_buffer[i + 3],
-                    temp_buffer[i + 4],
-                    temp_buffer[i + 5],
-                ]);
-            }
+
+        let mut locked_buffer = buffer.lock().await;
+        gyro.get_gyro_data_buffer(&mut locked_buffer).await;
+
+        // let locked_buffer = buffer,
+        // if gyro.get_state() == &State::Active {
+        //     {
+        //         // Not sure what I'm doing here, what purpose the buffer is using
+        //         // TODO: Figure out what the buffer is supposed to be doing here, and if I need it.
+        //         let locked_buffer = buffer.lock().await;
+        //         temp_buffer.copy_from_slice(&locked_buffer[0..144]);
+        //     }
+        //     let size = gyro.get_gyro_data_buffer(&mut *buffer.lock().await).await as usize;
+        for i in (0..144 / 6).step_by(6) {
+            let _ = output_channel.try_send([
+                locked_buffer[i],
+                locked_buffer[i + 1],
+                locked_buffer[i + 2],
+                locked_buffer[i + 3],
+                locked_buffer[i + 4],
+                locked_buffer[i + 5],
+            ]);
         }
+        // let size = gyro.get_gyro_data_buffer(&mut *buffer.lock().await).await as usize;
+        // warn!("Number of bytes in buffer at end of fifo task: {}", size);
     }
 }
 
@@ -219,9 +234,9 @@ async fn gyro_socket_task(
     let mut buffer = [0u8; 192];
     let mut idx = 0usize;
     loop {
-        println!("length of channel: {}", in_channel.len());
+        // println!("length of channel: {}", in_channel.len());
         let sample = in_channel.receive().await;
-        println!("received a sample from channel");
+        // println!("received a sample from channel");
         let base = idx * 6;
         buffer[base] = sample[0];
         buffer[base + 1] = sample[1];
@@ -258,8 +273,8 @@ async fn main(spawner: Spawner) {
         GYRO_COLLECT_SC.init(Signal::new());
     let gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32> =
         GYRO_DATA_CHANNEL.init(Channel::new());
-    let gyro_buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 192]> =
-        GYRO_BUFFER.init(Mutex::new([0u8; 192]));
+    let gyro_buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 144]> =
+        GYRO_BUFFER.init(Mutex::new([0u8; 144]));
     let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
     static PACKETS: StaticCell<PacketQueue<4, 4>> = StaticCell::new();
     let device = eth::Ethernet::new(
@@ -278,6 +293,8 @@ async fn main(spawner: Spawner) {
         GenericPhy::new_auto(),
         mac_addr,
     );
+    static WTMK_INTERRUPT: StaticCell<ExtiInput> = StaticCell::new();
+    let gyro_watermark_interrupt = WTMK_INTERRUPT.init(ExtiInput::new(p.PA0, p.EXTI0, Pull::Down));
     let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
         address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 1, 99), 24),
         dns_servers: Vec::new(),
@@ -309,7 +326,12 @@ async fn main(spawner: Spawner) {
     // let _ = spawner.spawn(read_i2c_whoami(i2c2_device1));
     let _ = spawner.spawn(read_ctrl_reg1(i2c2_device2));
 
-    let _ = spawner.spawn(gyro_producer_fifo(fxas, gyro_channel, gyro_buffer));
+    let _ = spawner.spawn(gyro_producer_fifo(
+        gyro_watermark_interrupt,
+        fxas,
+        gyro_channel,
+        gyro_buffer,
+    ));
     // let _ = spawner.spawn(gyro_producer(fxas, gyro_channel));
     // let _ = spawner.spawn(gyro_consumer(gyro_channel));
     let _ = spawner.spawn(gyro_temp_producer(fxas));
@@ -322,6 +344,10 @@ async fn main(spawner: Spawner) {
         .await
         .set_fifo_mode(fxas2100::fifo::Mode::Circular)
         .await;
+    let data_rate = fxas.lock().await.get_datarate().await;
+    println!("data rate: {}", data_rate);
+    let _ = fxas.lock().await.set_watermark(24).await;
+    let _ = fxas.lock().await.enable_watermark_interrupt().await;
     let _ = fxas.lock().await.set_active().await;
 
     unwrap!(spawner.spawn(net_task(runner)));
@@ -345,20 +371,10 @@ async fn main(spawner: Spawner) {
     // socket.bind(remote_endpoint).expect("Socket Bind Error");
     // trace!("Is the socket ready?: {}", socket.may_send());
     unwrap!(spawner.spawn(gyro_socket_task(udp_socket, gyro_channel)));
+
     loop {
-        Timer::after_millis(500).await;
-        info!("tick");
-        // socket
-        //     .send_to(b"Hello, world", remote_endpoint)
-        //     .await
-        //     .expect("Buffer sent");
         Timer::after_secs(1).await;
-        // if value {
-        //     fxas.lock().await.set_active().await;
-        //     value = !value;
-        // } else {
-        //     fxas.lock().await.set_ready().await;
-        //     value = !value;
-        // }
+        //gyro_watermark_interrupt.wait_for_rising_edge().await;
+        error!("tick");
     }
 }
