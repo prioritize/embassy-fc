@@ -46,7 +46,7 @@ static _ODR_SHARED: Mutex<ThreadModeRawMutex, u32> = Mutex::new(0);
 static _GYRO_DATA: Mutex<ThreadModeRawMutex, [u8; 6]> = Mutex::new([0u8; 6]);
 // static GYRO_COLLECT_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 static GYRO_COLLECT_SC: StaticCell<Signal<CriticalSectionRawMutex, bool>> = StaticCell::new();
-static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 6], 32>> =
+static GYRO_DATA_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, [u8; 144], 6>> =
     StaticCell::new();
 static FXAS_CELL: StaticCell<Mutex<CriticalSectionRawMutex, AsyncFXAS>> = StaticCell::new();
 static GYRO_BUFFER: StaticCell<Mutex<CriticalSectionRawMutex, [u8; 144]>> = StaticCell::new();
@@ -64,6 +64,7 @@ static GYRO_BUFFER: StaticCell<Mutex<CriticalSectionRawMutex, [u8; 144]>> = Stat
 fn combine(msb: u8, lsb: u8) -> u16 {
     (msb as u16) << 8 | lsb as u16
 }
+
 #[embassy_executor::task]
 async fn read_i2c_whoami(mut i2c: AsyncI2CDevice) {
     let mut data = [0u8; 1];
@@ -160,14 +161,13 @@ async fn gyro_producer(
 async fn gyro_producer_fifo(
     interrupt: &'static mut ExtiInput<'static>,
     gyro: &'static Mutex<CriticalSectionRawMutex, AsyncFXAS>,
-    output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>,
+    output_channel: &'static Channel<CriticalSectionRawMutex, [u8; 144], 6>,
     buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 144]>,
 ) {
     // timeout isn't needed as we're working with interrupts now
     // let timeout = (1_000_000 / gyro.lock().await.data_rate.to_u16() as u64) * 20;
     // The interrupt should be triggered when there are 20 samples in the buffer that are ready
     // (20 samples * 6 bytes per sample = 120 bytes)
-    let mut temp_buffer = [0u8; 144];
     loop {
         trace!("waiting for an interrupt in gyro_producer_fifo");
         interrupt.wait_for_rising_edge().await;
@@ -177,25 +177,7 @@ async fn gyro_producer_fifo(
         let mut locked_buffer = buffer.lock().await;
         gyro.get_gyro_data_buffer(&mut locked_buffer).await;
 
-        // let locked_buffer = buffer,
-        // if gyro.get_state() == &State::Active {
-        //     {
-        //         // Not sure what I'm doing here, what purpose the buffer is using
-        //         // TODO: Figure out what the buffer is supposed to be doing here, and if I need it.
-        //         let locked_buffer = buffer.lock().await;
-        //         temp_buffer.copy_from_slice(&locked_buffer[0..144]);
-        //     }
-        //     let size = gyro.get_gyro_data_buffer(&mut *buffer.lock().await).await as usize;
-        for i in (0..144 / 6).step_by(6) {
-            let _ = output_channel.try_send([
-                locked_buffer[i],
-                locked_buffer[i + 1],
-                locked_buffer[i + 2],
-                locked_buffer[i + 3],
-                locked_buffer[i + 4],
-                locked_buffer[i + 5],
-            ]);
-        }
+        let _ = output_channel.try_send(*locked_buffer);
         // let size = gyro.get_gyro_data_buffer(&mut *buffer.lock().await).await as usize;
         // warn!("Number of bytes in buffer at end of fifo task: {}", size);
     }
@@ -227,26 +209,22 @@ async fn net_task(mut runner: embassy_net::Runner<'static, EthernetDevice>) -> !
 #[embassy_executor::task]
 async fn gyro_socket_task(
     socket: &'static mut UdpSocket<'static>,
-    in_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32>,
+    in_channel: &'static Channel<CriticalSectionRawMutex, [u8; 144], 6>,
 ) {
     let remote_endpoint = (Ipv4Address::new(192, 168, 1, 29), 8000);
     let _ = socket.bind((Ipv4Address::new(192, 168, 1, 99), 8000));
-    let mut buffer = [0u8; 192];
+    let mut buffer = [0u8; 864];
     let mut idx = 0usize;
     loop {
         // println!("length of channel: {}", in_channel.len());
         let sample = in_channel.receive().await;
         // println!("received a sample from channel");
-        let base = idx * 6;
-        buffer[base] = sample[0];
-        buffer[base + 1] = sample[1];
-        buffer[base + 2] = sample[2];
-        buffer[base + 3] = sample[3];
-        buffer[base + 4] = sample[4];
-        buffer[base + 5] = sample[5];
+        let base = idx * 144;
+        buffer[base..base + 144].copy_from_slice(&sample);
         idx += 1;
-        if idx == 31 {
+        if idx == 6 {
             idx = 0;
+            println!("{}", buffer);
             socket
                 .send_to(&buffer, remote_endpoint)
                 .await
@@ -271,7 +249,7 @@ async fn main(spawner: Spawner) {
     );
     let _gyro_signal: &'static mut Signal<CriticalSectionRawMutex, bool> =
         GYRO_COLLECT_SC.init(Signal::new());
-    let gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 6], 32> =
+    let gyro_channel: &'static Channel<CriticalSectionRawMutex, [u8; 144], 6> =
         GYRO_DATA_CHANNEL.init(Channel::new());
     let gyro_buffer: &'static Mutex<CriticalSectionRawMutex, [u8; 144]> =
         GYRO_BUFFER.init(Mutex::new([0u8; 144]));
